@@ -1,6 +1,272 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#1769ff"><link rel="manifest" href="manifest.webmanifest"><title>藍色地圖 JSON 轉換器</title><style>body{font-family:Arial,sans-serif;margin:0;background:#f5f7fb}header{background:#1769ff;color:#fff;padding:18px}main{padding:16px;max-width:760px;margin:auto}.card{background:#fff;padding:16px;border-radius:16px}input,textarea,select,button{width:100%;box-sizing:border-box;padding:12px;margin-top:10px;font-size:16px;border-radius:10px}textarea{height:300px;font-family:monospace}button{border:0;background:#1769ff;color:#fff;font-weight:700}.secondary{background:#e8eefc;color:#17315f}.status{white-space:pre-wrap;background:#f1f4f9;padding:12px;border-radius:10px;margin-top:12px}</style></head><body><header><h2>藍色地圖 JSON 轉換器</h2></header><main><div class="card"><label>路線名稱</label><input id="name" value="自訂路線"><label>速度</label><select id="speed"><option value="null">交給 App 控制（null）</option><option value="19">19</option></select><label>貼上座標</label><textarea id="coords" placeholder="60.486028,22.142724&#10;60.486340,22.143005"></textarea><button onclick="downloadJson()">產生並下載 JSON</button><button class="secondary" onclick="preview()">預覽</button><div id="status" class="status">尚未轉換。</div></div></main><script>
-function parse(){const lines=document.getElementById("coords").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const pts=[];for(let i=0;i<lines.length;i++){const n=lines[i].match(/-?\d+(?:\.\d+)?/g);if(!n||n.length<2)throw new Error(`第 ${i+1} 行無法解析`);let a=+n[0],b=+n[1],lat=a,lng=b;if(Math.abs(a)>90&&Math.abs(b)<=90){lat=b;lng=a}if(Math.abs(lat)>90||Math.abs(lng)>180)throw new Error(`第 ${i+1} 行範圍異常`);pts.push({lat,lng,altitude:null,speed:document.getElementById("speed").value==="null"?null:+document.getElementById("speed").value,heading:null,dwellTimeMs:null})}if(!pts.length)throw new Error("沒有座標");return {groups:[],routes:[{name:document.getElementById("name").value||"自訂路線",description:"",playbackMode:"FOLLOW_PATH",waypoints:pts}]}}
-function preview(){try{const o=parse(),s=JSON.stringify(o,null,2);document.getElementById("status").textContent=`成功解析 ${o.routes[0].waypoints.length} 點\n\n`+s.slice(0,3000)}catch(e){document.getElementById("status").textContent="錯誤："+e.message}}
-function downloadJson(){try{const o=parse(),s=JSON.stringify(o,null,2),c=o.routes[0].waypoints.length,n=(o.routes[0].name||"自訂路線").replace(/[\\/:*?"<>|]+/g,"_"),sp=o.routes[0].waypoints[0].speed===null?"null":o.routes[0].waypoints[0].speed,b=new Blob([s],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download=`藍色地圖_${n}_${c}點_speed_${sp}.json`;a.click();URL.revokeObjectURL(u);document.getElementById("status").textContent=`已產生 ${c} 點 JSON`}catch(e){document.getElementById("status").textContent="錯誤："+e.message}}
-if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js");
-</script></body></html>
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1769ff">
+<link rel="manifest" href="manifest.webmanifest">
+<title>藍色地圖 JSON 轉換器</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",Arial,sans-serif;margin:0;background:#f5f7fb;color:#1f2937}
+header{background:#1769ff;color:#fff;padding:18px}
+header h1{font-size:21px;margin:0}
+main{max-width:760px;margin:auto;padding:16px}
+.card{background:#fff;border-radius:16px;padding:16px;box-shadow:0 3px 16px #00000012}
+label{display:block;font-weight:700;margin:14px 0 7px}
+input,textarea,select{width:100%;border:1px solid #cfd6e4;border-radius:12px;padding:12px;font-size:16px;background:#fff}
+textarea{height:300px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical}
+button{width:100%;border:0;border-radius:12px;padding:13px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
+.primary{background:#1769ff;color:#fff}
+.drive{background:#16884a;color:#fff}
+.secondary{background:#e8eefc;color:#17315f}
+.status{white-space:pre-wrap;background:#f1f4f9;border-radius:12px;padding:12px;margin-top:12px;font-size:14px}
+.note{font-size:13px;color:#667085;line-height:1.5}
+</style>
+</head>
+<body>
+<header><h1>藍色地圖 JSON 轉換器</h1></header>
+<main>
+<div class="card">
+<label>路線名稱</label>
+<input id="routeName" value="自訂路線">
+
+<label>速度</label>
+<select id="speedMode">
+<option value="null" selected>交給藍色地圖控制（null）</option>
+<option value="19">19</option>
+</select>
+
+<label>貼上座標</label>
+<textarea id="coords" placeholder="一行一組，例如：
+60.486028,22.142724
+60.486340,22.143005"></textarea>
+<div class="note">會保留原始順序；格式固定為 FOLLOW_PATH。</div>
+
+<button class="primary" onclick="downloadJson()">下載 JSON</button>
+<button class="drive" onclick="saveToDrive()">登入 Google 並儲存到 Drive</button>
+<button class="secondary" onclick="previewJson()">預覽</button>
+<button class="secondary" onclick="clearText()">清空</button>
+
+<div id="status" class="status">尚未轉換。</div>
+</div>
+</main>
+
+<script>
+const CLIENT_ID = "884651471962-6312mc1d3dg2doeijmrdrhcpfnlf7tel.apps.googleusercontent.com";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+let tokenClient = null;
+let accessToken = null;
+let pendingSave = false;
+
+window.addEventListener("load", () => {
+  if (window.google?.accounts?.oauth2) {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: async (response) => {
+        if (response.error) {
+          setStatus("Google 授權失敗：" + response.error);
+          return;
+        }
+        accessToken = response.access_token;
+        if (pendingSave) {
+          pendingSave = false;
+          await uploadCurrentRoute();
+        }
+      }
+    });
+  }
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+});
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
+}
+
+function parseCoords(text) {
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const points = [];
+  for (let i = 0; i < lines.length; i++) {
+    const nums = lines[i].match(/-?\d+(?:\.\d+)?/g);
+    if (!nums || nums.length < 2) throw new Error(`第 ${i+1} 行無法解析`);
+    let a = Number(nums[0]), b = Number(nums[1]);
+    let lat = a, lng = b;
+    if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
+      lat = b; lng = a;
+    }
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw new Error(`第 ${i+1} 行座標範圍異常`);
+    }
+    const speed = document.getElementById("speedMode").value === "null"
+      ? null
+      : Number(document.getElementById("speedMode").value);
+    points.push({
+      lat, lng,
+      altitude: null,
+      speed,
+      heading: null,
+      dwellTimeMs: null
+    });
+  }
+  if (!points.length) throw new Error("沒有座標");
+  return points;
+}
+
+function buildRoute() {
+  const points = parseCoords(document.getElementById("coords").value);
+  const name = document.getElementById("routeName").value.trim() || "自訂路線";
+  return {
+    groups: [],
+    routes: [{
+      name,
+      description: "",
+      playbackMode: "FOLLOW_PATH",
+      waypoints: points
+    }]
+  };
+}
+
+function safeName(name) {
+  return name.replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_");
+}
+
+function currentFilename(route) {
+  const points = route.routes[0].waypoints;
+  const speed = points[0].speed === null ? "null" : points[0].speed;
+  return `藍色地圖_${safeName(route.routes[0].name)}_${points.length}點_speed_${speed}.json`;
+}
+
+function downloadJson() {
+  try {
+    const route = buildRoute();
+    const filename = currentFilename(route);
+    const blob = new Blob([JSON.stringify(route, null, 2)], {type:"application/json;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus(`已下載：${filename}`);
+  } catch (e) {
+    setStatus("錯誤：" + e.message);
+  }
+}
+
+function previewJson() {
+  try {
+    const route = buildRoute();
+    const json = JSON.stringify(route, null, 2);
+    setStatus(`成功解析 ${route.routes[0].waypoints.length} 點\n\n` +
+      json.slice(0, 3500) + (json.length > 3500 ? "\n\n……預覽已截斷" : ""));
+  } catch (e) {
+    setStatus("錯誤：" + e.message);
+  }
+}
+
+function clearText() {
+  document.getElementById("coords").value = "";
+  setStatus("已清空。");
+}
+
+async function saveToDrive() {
+  try {
+    buildRoute();
+  } catch (e) {
+    setStatus("錯誤：" + e.message);
+    return;
+  }
+
+  if (!tokenClient) {
+    setStatus("Google 登入元件尚未載入，請稍等幾秒後再試。");
+    return;
+  }
+
+  if (!accessToken) {
+    pendingSave = true;
+    tokenClient.requestAccessToken({prompt: "consent"});
+    return;
+  }
+
+  await uploadCurrentRoute();
+}
+
+async function driveFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", "Bearer " + accessToken);
+  const response = await fetch(url, {...options, headers});
+  if (response.status === 401) {
+    accessToken = null;
+    throw new Error("Google 登入已逾時，請再按一次儲存到 Drive。");
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Drive API 錯誤 ${response.status}：${text}`);
+  }
+  return response;
+}
+
+async function getOrCreateBlueMapFolder() {
+  const q = encodeURIComponent("name='BlueMap' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=10`;
+  const listResp = await driveFetch(listUrl);
+  const listData = await listResp.json();
+  if (listData.files && listData.files.length) return listData.files[0].id;
+
+  const createResp = await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id,name", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      name: "BlueMap",
+      mimeType: "application/vnd.google-apps.folder"
+    })
+  });
+  const created = await createResp.json();
+  return created.id;
+}
+
+async function uploadCurrentRoute() {
+  try {
+    setStatus("正在連線 Google Drive……");
+    const route = buildRoute();
+    const filename = currentFilename(route);
+    const folderId = await getOrCreateBlueMapFolder();
+
+    const metadata = {
+      name: filename,
+      mimeType: "application/json",
+      parents: [folderId]
+    };
+
+    const boundary = "-------BlueMapBoundary" + Date.now();
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(metadata) + `\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(route, null, 2) + `\r\n` +
+      `--${boundary}--`;
+
+    const response = await driveFetch(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+      {
+        method: "POST",
+        headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+        body
+      }
+    );
+
+    const result = await response.json();
+    setStatus(`已儲存到 Google Drive / BlueMap\n檔名：${result.name}`);
+  } catch (e) {
+    setStatus("儲存失敗：" + e.message);
+  }
+}
+</script>
+</body>
+</html>
