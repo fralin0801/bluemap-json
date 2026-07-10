@@ -4,14 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#1769ff">
-<link rel="manifest" href="manifest.webmanifest">
-<title>藍色地圖 JSON 轉換器</title>
+<link rel="manifest" href="./manifest.webmanifest?v=2">
+<title>藍色地圖 JSON 轉換器｜雲端版</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 *{box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",Arial,sans-serif;margin:0;background:#f5f7fb;color:#1f2937}
 header{background:#1769ff;color:#fff;padding:18px}
 header h1{font-size:21px;margin:0}
+header small{display:block;margin-top:5px;opacity:.9}
 main{max-width:760px;margin:auto;padding:16px}
 .card{background:#fff;border-radius:16px;padding:16px;box-shadow:0 3px 16px #00000012}
 label{display:block;font-weight:700;margin:14px 0 7px}
@@ -23,10 +24,14 @@ button{width:100%;border:0;border-radius:12px;padding:13px;font-size:16px;font-w
 .secondary{background:#e8eefc;color:#17315f}
 .status{white-space:pre-wrap;background:#f1f4f9;border-radius:12px;padding:12px;margin-top:12px;font-size:14px}
 .note{font-size:13px;color:#667085;line-height:1.5}
+.version{font-size:12px;color:#667085;text-align:center;margin-top:12px}
 </style>
 </head>
 <body>
-<header><h1>藍色地圖 JSON 轉換器</h1></header>
+<header>
+<h1>藍色地圖 JSON 轉換器</h1>
+<small>Google Drive 雲端版</small>
+</header>
 <main>
 <div class="card">
 <label>路線名稱</label>
@@ -42,14 +47,15 @@ button{width:100%;border:0;border-radius:12px;padding:13px;font-size:16px;font-w
 <textarea id="coords" placeholder="一行一組，例如：
 60.486028,22.142724
 60.486340,22.143005"></textarea>
-<div class="note">會保留原始順序；格式固定為 FOLLOW_PATH。</div>
+<div class="note">保留原始順序，輸出 FOLLOW_PATH。</div>
 
 <button class="primary" onclick="downloadJson()">下載 JSON</button>
-<button class="drive" onclick="saveToDrive()">登入 Google 並儲存到 Drive</button>
+<button class="drive" onclick="saveToDrive()">☁ 登入 Google 並儲存到 Drive</button>
 <button class="secondary" onclick="previewJson()">預覽</button>
 <button class="secondary" onclick="clearText()">清空</button>
 
-<div id="status" class="status">尚未轉換。</div>
+<div id="status" class="status">雲端版已載入。</div>
+<div class="version">版本：Drive v2</div>
 </div>
 </main>
 
@@ -60,26 +66,57 @@ let tokenClient = null;
 let accessToken = null;
 let pendingSave = false;
 
-window.addEventListener("load", () => {
-  if (window.google?.accounts?.oauth2) {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: DRIVE_SCOPE,
-      callback: async (response) => {
-        if (response.error) {
-          setStatus("Google 授權失敗：" + response.error);
-          return;
-        }
-        accessToken = response.access_token;
-        if (pendingSave) {
-          pendingSave = false;
-          await uploadCurrentRoute();
-        }
-      }
-    });
+window.addEventListener("load", async () => {
+  // Remove old service workers and caches once, so previous GitHub Pages versions cannot stay stuck.
+  if ("serviceWorker" in navigator) {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const reg of regs) await reg.unregister();
   }
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+  if ("caches" in window) {
+    const names = await caches.keys();
+    for (const name of names) {
+      if (name !== "bluemap-drive-v2") await caches.delete(name);
+    }
+  }
+
+  if (window.google?.accounts?.oauth2) initGoogle();
+  else {
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      if (window.google?.accounts?.oauth2) {
+        clearInterval(timer);
+        initGoogle();
+      } else if (tries >= 20) {
+        clearInterval(timer);
+        setStatus("Google 登入元件載入失敗，請確認網路後重新整理。");
+      }
+    }, 300);
+  }
+
+  // Re-register the new network-first service worker.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js?v=2");
+  }
 });
+
+function initGoogle() {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: DRIVE_SCOPE,
+    callback: async (response) => {
+      if (response.error) {
+        setStatus("Google 授權失敗：" + response.error);
+        return;
+      }
+      accessToken = response.access_token;
+      if (pendingSave) {
+        pendingSave = false;
+        await uploadCurrentRoute();
+      }
+    }
+  });
+}
 
 function setStatus(text) {
   document.getElementById("status").textContent = text;
@@ -93,22 +130,11 @@ function parseCoords(text) {
     if (!nums || nums.length < 2) throw new Error(`第 ${i+1} 行無法解析`);
     let a = Number(nums[0]), b = Number(nums[1]);
     let lat = a, lng = b;
-    if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
-      lat = b; lng = a;
-    }
-    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
-      throw new Error(`第 ${i+1} 行座標範圍異常`);
-    }
+    if (Math.abs(a) > 90 && Math.abs(b) <= 90) { lat = b; lng = a; }
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new Error(`第 ${i+1} 行座標範圍異常`);
     const speed = document.getElementById("speedMode").value === "null"
-      ? null
-      : Number(document.getElementById("speedMode").value);
-    points.push({
-      lat, lng,
-      altitude: null,
-      speed,
-      heading: null,
-      dwellTimeMs: null
-    });
+      ? null : Number(document.getElementById("speedMode").value);
+    points.push({lat,lng,altitude:null,speed,heading:null,dwellTimeMs:null});
   }
   if (!points.length) throw new Error("沒有座標");
   return points;
@@ -117,15 +143,7 @@ function parseCoords(text) {
 function buildRoute() {
   const points = parseCoords(document.getElementById("coords").value);
   const name = document.getElementById("routeName").value.trim() || "自訂路線";
-  return {
-    groups: [],
-    routes: [{
-      name,
-      description: "",
-      playbackMode: "FOLLOW_PATH",
-      waypoints: points
-    }]
-  };
+  return {groups:[],routes:[{name,description:"",playbackMode:"FOLLOW_PATH",waypoints:points}]};
 }
 
 function safeName(name) {
@@ -142,130 +160,87 @@ function downloadJson() {
   try {
     const route = buildRoute();
     const filename = currentFilename(route);
-    const blob = new Blob([JSON.stringify(route, null, 2)], {type:"application/json;charset=utf-8"});
+    const blob = new Blob([JSON.stringify(route,null,2)],{type:"application/json;charset=utf-8"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
     setStatus(`已下載：${filename}`);
-  } catch (e) {
-    setStatus("錯誤：" + e.message);
-  }
+  } catch(e) { setStatus("錯誤：" + e.message); }
 }
 
 function previewJson() {
   try {
-    const route = buildRoute();
-    const json = JSON.stringify(route, null, 2);
-    setStatus(`成功解析 ${route.routes[0].waypoints.length} 點\n\n` +
-      json.slice(0, 3500) + (json.length > 3500 ? "\n\n……預覽已截斷" : ""));
-  } catch (e) {
-    setStatus("錯誤：" + e.message);
-  }
+    const route=buildRoute(), json=JSON.stringify(route,null,2);
+    setStatus(`成功解析 ${route.routes[0].waypoints.length} 點\n\n`+json.slice(0,3500)+(json.length>3500?"\n\n……預覽已截斷":""));
+  } catch(e) { setStatus("錯誤：" + e.message); }
 }
 
 function clearText() {
-  document.getElementById("coords").value = "";
+  document.getElementById("coords").value="";
   setStatus("已清空。");
 }
 
 async function saveToDrive() {
-  try {
-    buildRoute();
-  } catch (e) {
-    setStatus("錯誤：" + e.message);
-    return;
-  }
-
+  try { buildRoute(); } catch(e) { setStatus("錯誤：" + e.message); return; }
   if (!tokenClient) {
-    setStatus("Google 登入元件尚未載入，請稍等幾秒後再試。");
+    setStatus("Google 登入元件尚未準備完成，請稍等幾秒後再試。");
     return;
   }
-
   if (!accessToken) {
     pendingSave = true;
-    tokenClient.requestAccessToken({prompt: "consent"});
+    tokenClient.requestAccessToken({prompt:"consent"});
     return;
   }
-
   await uploadCurrentRoute();
 }
 
-async function driveFetch(url, options = {}) {
+async function driveFetch(url, options={}) {
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", "Bearer " + accessToken);
-  const response = await fetch(url, {...options, headers});
+  headers.set("Authorization","Bearer "+accessToken);
+  const response = await fetch(url,{...options,headers});
   if (response.status === 401) {
     accessToken = null;
     throw new Error("Google 登入已逾時，請再按一次儲存到 Drive。");
   }
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Drive API 錯誤 ${response.status}：${text}`);
-  }
+  if (!response.ok) throw new Error(`Drive API 錯誤 ${response.status}：${await response.text()}`);
   return response;
 }
 
 async function getOrCreateBlueMapFolder() {
   const q = encodeURIComponent("name='BlueMap' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=10`;
-  const listResp = await driveFetch(listUrl);
-  const listData = await listResp.json();
-  if (listData.files && listData.files.length) return listData.files[0].id;
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=10`);
+  const data = await resp.json();
+  if (data.files?.length) return data.files[0].id;
 
-  const createResp = await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id,name", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({
-      name: "BlueMap",
-      mimeType: "application/vnd.google-apps.folder"
-    })
+  const create = await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id,name",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:"BlueMap",mimeType:"application/vnd.google-apps.folder"})
   });
-  const created = await createResp.json();
-  return created.id;
+  return (await create.json()).id;
 }
 
 async function uploadCurrentRoute() {
   try {
     setStatus("正在連線 Google Drive……");
-    const route = buildRoute();
-    const filename = currentFilename(route);
-    const folderId = await getOrCreateBlueMapFolder();
-
-    const metadata = {
-      name: filename,
-      mimeType: "application/json",
-      parents: [folderId]
-    };
-
-    const boundary = "-------BlueMapBoundary" + Date.now();
-    const body =
-      `--${boundary}\r\n` +
-      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-      JSON.stringify(metadata) + `\r\n` +
-      `--${boundary}\r\n` +
-      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-      JSON.stringify(route, null, 2) + `\r\n` +
+    const route=buildRoute(), filename=currentFilename(route);
+    const folderId=await getOrCreateBlueMapFolder();
+    const metadata={name:filename,mimeType:"application/json",parents:[folderId]};
+    const boundary="BlueMapBoundary"+Date.now();
+    const body=
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(route,null,2)}\r\n`+
       `--${boundary}--`;
 
-    const response = await driveFetch(
-      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
-      {
-        method: "POST",
-        headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
-        body
-      }
-    );
-
-    const result = await response.json();
+    const resp=await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",{
+      method:"POST",
+      headers:{"Content-Type":`multipart/related; boundary=${boundary}`},
+      body
+    });
+    const result=await resp.json();
     setStatus(`已儲存到 Google Drive / BlueMap\n檔名：${result.name}`);
-  } catch (e) {
-    setStatus("儲存失敗：" + e.message);
-  }
+  } catch(e) { setStatus("儲存失敗：" + e.message); }
 }
 </script>
 </body>
